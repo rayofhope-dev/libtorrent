@@ -45,10 +45,13 @@ for l in f:
 		in_block = False
 	elif l == 'enum string_types':
 		in_block = True
+		arg_type = 'char const*'
 	elif l == 'enum bool_types':
 		in_block = True
+		arg_type = 'int (0 or 1)'
 	elif l == 'enum int_types':
 		in_block = True
+		arg_type = 'int'
 	elif not in_block:
 		continue
 	else:
@@ -63,10 +66,10 @@ for l in f:
 
 		cpp.write('\t\tcase SET_%s: return sp::%s;\n' % (setting.upper(), setting))
 		if first:
-			header.write('	SET_%s = 0x200,\n' % (setting.upper()))
+			header.write('	SET_%s = 0x200, // %s\n' % (setting.upper(), arg_type))
 			first = False
 		else:
-			header.write('	SET_%s,\n' % (setting.upper()))
+			header.write('	SET_%s, // %s\n' % (setting.upper(), arg_type))
 	
 cpp.write('''		default:
 			// ignore unknown tags

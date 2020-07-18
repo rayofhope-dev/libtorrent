@@ -36,6 +36,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "libtorrent_settings.h"
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum tags
 {
 	TAG_END = 0,
@@ -157,11 +161,9 @@ enum state_t
 struct torrent_status
 {
 	enum state_t state;
-	int paused;
 	float progress;
 	char error[1024];
 	int next_announce;
-	int announce_interval;
 	char current_tracker[512];
 	long long total_download;
 	long long total_upload;
@@ -181,7 +183,7 @@ struct torrent_status
 	int list_peers;
 	int connect_candidates;
 
-	// what to do?	
+	// what to do?
 //	bitfield pieces;
 
 	int num_pieces;
@@ -199,70 +201,9 @@ struct torrent_status
 	int down_bandwidth_queue;
 	long long all_time_upload;
 	long long all_time_download;
-	int active_time;
-	int seeding_time;
 	int seed_rank;
-	int last_scrape;
 	int has_incoming;
-	int seed_mode;
 };
-
-struct session_status
-{
-	int has_incoming_connections;
-
-	float upload_rate;
-	float download_rate;
-	long long total_download;
-	long long total_upload;
-
-	float payload_upload_rate;
-	float payload_download_rate;
-	long long total_payload_download;
-	long long total_payload_upload;
-
-	float ip_overhead_upload_rate;
-	float ip_overhead_download_rate;
-	long long total_ip_overhead_download;
-	long long total_ip_overhead_upload;
-
-	float dht_upload_rate;
-	float dht_download_rate;
-	long long total_dht_download;
-	long long total_dht_upload;
-
-	float tracker_upload_rate;
-	float tracker_download_rate;
-	long long total_tracker_download;
-	long long total_tracker_upload;
-
-	long long total_redundant_bytes;
-	long long total_failed_bytes;
-
-	int num_peers;
-	int num_unchoked;
-	int allowed_upload_slots;
-
-	int up_bandwidth_queue;
-	int down_bandwidth_queue;
-
-	int up_bandwidth_bytes_queue;
-	int down_bandwidth_bytes_queue;
-
-	int optimistic_unchoke_counter;
-	int unchoke_counter;
-
-	int dht_nodes;
-	int dht_node_cache;
-	int dht_torrents;
-	long long dht_global_nodes;
-//	std::vector<dht_lookup> active_requests;
-};
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 struct libtorrent_alert;
 struct libtorrent_session;
@@ -280,7 +221,7 @@ struct libtorrent_session;
 // ``NULL`` on error. Any non-NULL return value must be freed by passing it to
 // ``session_close()``.
 
-// use SES_* tags in tag list to configure the session.
+// use SET_* tags in tag list to configure the session.
 struct libtorrent_session* session_create(int first_tag, ...);
 void session_close(struct libtorrent_session* ses);
 
@@ -296,29 +237,46 @@ void session_remove_torrent(struct libtorrent_session* ses, int tor, int flags);
 // libtorrent_alert. Pass in the number of elements the array can hold, in
 // in-out parameter ``array_size``. The number of valid alert pointers stored in
 // the array is returned back via the value ``array_size`` points to.
-int session_pop_alerts(struct libtorrent_session* ses, struct libtorrent_alert** dest, int* array_size);
+int session_pop_alerts(struct libtorrent_session* ses, struct libtorrent_alert const** dest, int* array_size);
 
-int session_get_status(struct libtorrent_session* ses, struct session_status* s, int struct_size);
+// updates session settings. use ``SET_*`` tags.
+int session_set_settings(struct libtorrent_session* ses, int first_tag, ...);
 
+// reads one session setting. use ``SET_*`` tag. For string, the value buffer
+// must be large enough to hold the full string, or it will be truncated.
+// the size of the returned value will be written to the ``value_size`` out
+// parameter. Returns non-zero on failure.
+int session_get_setting(struct libtorrent_session* ses, int tag, void* value, int* value_size);
+
+// TODO: remove this in favor of post_torrent_updates()
 int torrent_get_status(int tor, struct torrent_status* s, int struct_size);
 
 // prints the alert's human readable message into buf, truncating it at ``size``
-int alert_message(struct libtorrent_alert* alert, char* buf, int size);
+int alert_message(struct libtorrent_alert const* alert, char* buf, int size);
 
 // returns the timestamp of when the alert was posted. The timestamp is the
 // number of microseconds since epoch.
-int64_t alert_timestamp(struct libtorrent_alert* alert);
+int64_t alert_timestamp(struct libtorrent_alert const* alert);
 
-// returns the type of the alert
-int alert_type(struct libtorrent_alert* alert);
+// returns the type of the alert. defined in libtorrent_alerts.h
+int alert_type(struct libtorrent_alert const* alert);
 
 // returns the category of the alert. This is a bitmask with one or more bits
 // set from the category_t enum.
-int alert_category(struct libtorrent_alert* alert);
+int alert_category(struct libtorrent_alert const* alert);
 
 // if this is an alert with an associated torrent handle, return that handle.
 // Otherwise, return -1.
-int alert_torrent_handle(struct libtorrent_alert* alert);
+int alert_torrent_handle(struct libtorrent_alert const* alert);
+
+// if ``alert`` refers to a session_stats_alert, returns a pointer to session
+// counters and NULL otherwise. The ``count`` out parameter is set to the number
+// of counters in the array. The returned array is valid until the next call to
+// session_pop_alerts(). To find a value in the array, use
+// ``find_metric_idx()``.
+int64_t const* alert_stats_counters(struct libtorrent_alert const* alert, int* count);
+
+int find_metric_idx(char const* name);
 
 // set a torrent specific setting. ``tor`` is the torrent handle whose setting
 // to change. This call can change multiple settings in a single call. The

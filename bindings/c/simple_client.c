@@ -101,7 +101,7 @@ int main(int argc, char* argv[])
 			, message);
 
 
-		struct libtorrent_alert* alerts[400];
+		struct libtorrent_alert const* alerts[400];
 		int num_alerts = 400;
 		session_pop_alerts(ses, alerts, &num_alerts);
 

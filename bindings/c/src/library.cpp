@@ -31,10 +31,11 @@ POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include "libtorrent/session.hpp"
-#include "libtorrent/session_status.hpp"
 #include "libtorrent/magnet_uri.hpp"
 #include "libtorrent/torrent_handle.hpp"
 #include "libtorrent/read_resume_data.hpp"
+#include "libtorrent/session_stats.hpp"
+#include "libtorrent/alert_types.hpp"
 
 #include <libtorrent.h>
 #include <stdarg.h>
@@ -42,6 +43,7 @@ POSSIBILITY OF SUCH DAMAGE.
 namespace {
 
 std::vector<lt::torrent_handle> handles;
+std::vector<int> free_handle_slots;
 
 int find_handle(lt::torrent_handle h)
 {
@@ -68,13 +70,34 @@ int add_handle(lt::torrent_handle const& h)
 		return i - handles.begin();
 	}
 
-	handles.push_back(h);
-	return handles.size() - 1;
+	if (free_handle_slots.empty())
+	{
+		handles.push_back(h);
+		return handles.size() - 1;
+	}
+
+	int const ret = free_handle_slots.back();
+	free_handle_slots.pop_back();
+	handles[ret] = h;
+	return ret;
+}
+
+void remove_handle(int const h)
+{
+	handles[h] = lt::torrent_handle{};
+	if (h == int(handles.size() - 1))
+	{
+		handles.pop_back();
+	}
+	else
+	{
+		free_handle_slots.push_back(h);
+	}
 }
 
 int set_int_value(void* dst, int* size, int val)
 {
-	if (*size < sizeof(int)) return -2;
+	if (*size < int(sizeof(int))) return -2;
 	std::memcpy(dst, &val, sizeof(int));
 	*size = sizeof(int);
 	return 0;
@@ -214,11 +237,13 @@ TORRENT_EXPORT void session_remove_torrent(libtorrent_session* ses, int tor, int
 	lt::torrent_handle h = get_handle(tor);
 	if (!h.is_valid()) return;
 
+	remove_handle(tor);
+
 	auto* s = reinterpret_cast<lt::session*>(ses);
 	s->remove_torrent(h, lt::remove_flags_t(flags));
 }
 
-TORRENT_EXPORT int session_pop_alerts(libtorrent_session* ses, libtorrent_alert** dest, int* len)
+TORRENT_EXPORT int session_pop_alerts(libtorrent_session* ses, libtorrent_alert const** dest, int* len)
 {
 	auto* s = reinterpret_cast<lt::session*>(ses);
 	if (len == nullptr) return -1;
@@ -231,7 +256,7 @@ TORRENT_EXPORT int session_pop_alerts(libtorrent_session* ses, libtorrent_alert*
 	// TODO: figure out what to do with the alert we may have lost here. Save
 	// them to the next call somehow?
 	int const to_copy = std::min(int(ret.size()), *len);
-	std::copy(ret.begin(), ret.begin() + to_copy, reinterpret_cast<lt::alert**>(dest));
+	std::copy(ret.begin(), ret.begin() + to_copy, reinterpret_cast<lt::alert const**>(dest));
 	*len = to_copy;
 	return 0; // for now
 }
@@ -272,63 +297,6 @@ TORRENT_EXPORT int session_get_setting(libtorrent_session* ses, int tag, void* v
 	}
 }
 
-TORRENT_EXPORT int session_get_status(libtorrent_session* sesptr, struct session_status* s, int struct_size)
-{
-	auto* ses = reinterpret_cast<lt::session*>(sesptr);
-
-	lt::session_status ss = ses->status();
-	if (struct_size != sizeof(session_status)) return -1;
-
-	s->has_incoming_connections = ss.has_incoming_connections;
-
-	s->upload_rate = ss.upload_rate;
-	s->download_rate = ss.download_rate;
-	s->total_download = ss.total_download;
-	s->total_upload = ss.total_upload;
-
-	s->payload_upload_rate = ss.payload_upload_rate;
-	s->payload_download_rate = ss.payload_download_rate;
-	s->total_payload_download = ss.total_payload_download;
-	s->total_payload_upload = ss.total_payload_upload;
-
-	s->ip_overhead_upload_rate = ss.ip_overhead_upload_rate;
-	s->ip_overhead_download_rate = ss.ip_overhead_download_rate;
-	s->total_ip_overhead_download = ss.total_ip_overhead_download;
-	s->total_ip_overhead_upload = ss.total_ip_overhead_upload;
-
-	s->dht_upload_rate = ss.dht_upload_rate;
-	s->dht_download_rate = ss.dht_download_rate;
-	s->total_dht_download = ss.total_dht_download;
-	s->total_dht_upload = ss.total_dht_upload;
-
-	s->tracker_upload_rate = ss.tracker_upload_rate;
-	s->tracker_download_rate = ss.tracker_download_rate;
-	s->total_tracker_download = ss.total_tracker_download;
-	s->total_tracker_upload = ss.total_tracker_upload;
-
-	s->total_redundant_bytes = ss.total_redundant_bytes;
-	s->total_failed_bytes = ss.total_failed_bytes;
-
-	s->num_peers = ss.num_peers;
-	s->num_unchoked = ss.num_unchoked;
-	s->allowed_upload_slots = ss.allowed_upload_slots;
-
-	s->up_bandwidth_queue = ss.up_bandwidth_queue;
-	s->down_bandwidth_queue = ss.down_bandwidth_queue;
-
-	s->up_bandwidth_bytes_queue = ss.up_bandwidth_bytes_queue;
-	s->down_bandwidth_bytes_queue = ss.down_bandwidth_bytes_queue;
-
-	s->optimistic_unchoke_counter = ss.optimistic_unchoke_counter;
-	s->unchoke_counter = ss.unchoke_counter;
-
-	s->dht_nodes = ss.dht_nodes;
-	s->dht_node_cache = ss.dht_node_cache;
-	s->dht_torrents = ss.dht_torrents;
-	s->dht_global_nodes = ss.dht_global_nodes;
-	return 0;
-}
-
 TORRENT_EXPORT int torrent_get_status(int tor, torrent_status* s, int struct_size)
 {
 	lt::torrent_handle h = get_handle(tor);
@@ -339,14 +307,13 @@ TORRENT_EXPORT int torrent_get_status(int tor, torrent_status* s, int struct_siz
 	if (struct_size != sizeof(torrent_status)) return -1;
 
 	s->state = (state_t)ts.state;
-	s->paused = ts.paused;
 	s->progress = ts.progress;
-	strncpy(s->error, ts.error.c_str(), 1025);
+	std::string err_msg = ts.errc.message();
+	strncpy(s->error, err_msg.c_str(), sizeof(s->error));
 	s->next_announce = lt::total_seconds(ts.next_announce);
-	s->announce_interval = lt::total_seconds(ts.announce_interval);
-	strncpy(s->current_tracker, ts.current_tracker.c_str(), 512);
-	s->total_download = ts.total_download = ts.total_download = ts.total_download;
-	s->total_upload = ts.total_upload = ts.total_upload = ts.total_upload;
+	strncpy(s->current_tracker, ts.current_tracker.c_str(), sizeof(s->current_tracker));
+	s->total_download = ts.total_download;
+	s->total_upload = ts.total_upload;
 	s->total_payload_download = ts.total_payload_download;
 	s->total_payload_upload = ts.total_payload_upload;
 	s->total_failed_bytes = ts.total_failed_bytes;
@@ -377,46 +344,53 @@ TORRENT_EXPORT int torrent_get_status(int tor, torrent_status* s, int struct_siz
 	s->down_bandwidth_queue = ts.down_bandwidth_queue;
 	s->all_time_upload = ts.all_time_upload;
 	s->all_time_download = ts.all_time_download;
-	s->active_time = ts.active_time;
-	s->seeding_time = ts.seeding_time;
 	s->seed_rank = ts.seed_rank;
-	s->last_scrape = ts.last_scrape;
 	s->has_incoming = ts.has_incoming;
-	s->seed_mode = ts.seed_mode;
 	return 0;
 }
 
-int alert_message(libtorrent_alert* alert, char* buf, int size)
+TORRENT_EXPORT int alert_message(libtorrent_alert const* alert, char* buf, int size)
 {
-	auto const* a = reinterpret_cast<lt::alert*>(alert);
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
 	auto const msg = a->message();
 	std::strncpy(buf, msg.c_str(), size - 1);
 	buf[size - 1] = '\0';
 	return 0;
 }
 
-std::int64_t alert_timestamp(struct libtorrent_alert* alert)
+TORRENT_EXPORT int64_t const* alert_stats_counters(struct libtorrent_alert const* alert, int* count)
 {
-	auto const* a = reinterpret_cast<lt::alert*>(alert);
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
+	auto const* sa = lt::alert_cast<lt::session_stats_alert>(a);
+	if (sa == nullptr) return nullptr;
+
+	lt::span<std::int64_t const> counters = sa->counters();
+	*count = int(counters.size());
+	return counters.data();
+}
+
+TORRENT_EXPORT std::int64_t alert_timestamp(struct libtorrent_alert const* alert)
+{
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
 	return std::chrono::duration_cast<std::chrono::microseconds>(
 		a->timestamp().time_since_epoch()).count();
 }
 
-int alert_type(struct libtorrent_alert* alert)
+TORRENT_EXPORT int alert_type(struct libtorrent_alert const* alert)
 {
-	auto const* a = reinterpret_cast<lt::alert*>(alert);
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
 	return a->type();
 }
 
-int alert_category(struct libtorrent_alert* alert)
+TORRENT_EXPORT int alert_category(struct libtorrent_alert const* alert)
 {
-	auto const* a = reinterpret_cast<lt::alert*>(alert);
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
 	return static_cast<int>(a->category());
 }
 
-int alert_torrent_handle(struct libtorrent_alert* alert)
+TORRENT_EXPORT int alert_torrent_handle(struct libtorrent_alert const* alert)
 {
-	auto const* a = reinterpret_cast<lt::alert*>(alert);
+	auto const* a = reinterpret_cast<lt::alert const*>(alert);
 	int const type = a->type();
 	switch (type)
 	{
@@ -487,6 +461,11 @@ int alert_torrent_handle(struct libtorrent_alert* alert)
 		}
 		default: return -1;
 	};
+}
+
+TORRENT_EXPORT int find_metric_idx(char const* name)
+{
+	return lt::find_metric_idx(name);
 }
 
 TORRENT_EXPORT int torrent_set_settings(int tor, int tag, ...)
