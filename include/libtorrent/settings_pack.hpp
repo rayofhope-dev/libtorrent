@@ -834,6 +834,9 @@ namespace aux {
 			// OpenSSL). If the system does not have one, enabling this may cause
 			// HTTPS trackers to fail.
 			validate_https_trackers,
+					
+			//Auto detect port on tracer side
+			dont_send_port_to_tracker,
 
 			max_bool_setting_internal
 		};
